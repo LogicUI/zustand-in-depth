@@ -346,6 +346,235 @@ const useStore = create(
 
 ---
 
+## 6. Hydration - SSR & Client State Synchronization
+
+Hydration is crucial for preventing mismatches between server-rendered and client-rendered content, especially when using persisted state. This example demonstrates how to properly handle hydration with Zustand.
+
+### The Hydration Problem
+
+In Next.js and other SSR frameworks, the server renders HTML with initial state values. When the client loads, Zustand may restore different values from localStorage, causing a hydration mismatch error:
+
+```
+Warning: Text content did not match. Server: "0" Client: "42"
+```
+
+### Solution: Hydration Boundary
+
+#### 1. TypeScript Types Definition
+
+```typescript
+// types/store.ts
+export interface Comment {
+  postId: number;
+  id: number;
+  name: string;
+  email: string;
+  body: string;
+}
+
+export interface AppState extends CounterState, CommentsState {
+  resetAll: () => void;
+}
+
+export interface PersistedState {
+  comments: Comment[];
+  count: number;
+}
+```
+
+#### 2. Store with Hydration Tracking
+
+```typescript
+// store/useAppStore.ts
+import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
+import { devtools } from 'zustand/middleware';
+import type { AppState, PersistedState } from '@/types/store';
+
+const useAppStore = create<AppState>()(
+  devtools(
+    persist(
+      (set, get) => ({
+        // State
+        comments: [],
+        loading: false,
+        error: null,
+        isHydrated: false, // Track hydration status
+        
+        // Actions
+        fetchComments: async () => {
+          // ... async fetch logic
+        },
+        
+        setHydrated: () => set({ isHydrated: true }, false, 'setHydrated'),
+        
+        // ... other actions
+      }),
+      {
+        name: 'app-storage',
+        storage: createJSONStorage(() => localStorage),
+        partialize: (state): PersistedState => ({
+          comments: state.comments,
+          count: state.count
+        }),
+        onRehydrateStorage: () => (state) => {
+          console.log('🔄 Hydration started');
+          
+          return (state, error) => {
+            if (error) {
+              console.error('❌ Hydration failed:', error);
+            } else {
+              console.log('✅ Hydration completed', state);
+              state?.setHydrated(); // Mark as hydrated
+            }
+          };
+        }
+      }
+    )
+  )
+);
+```
+
+#### 3. Hydration Boundary Component
+
+```typescript
+// components/HydrationBoundary.tsx
+'use client';
+
+import { useEffect, useState } from 'react';
+import useAppStore from '@/store/useAppStore';
+
+interface HydrationBoundaryProps {
+  children: React.ReactNode;
+  fallback?: React.ReactNode;
+}
+
+export default function HydrationBoundary({ 
+  children, 
+  fallback = <HydrationLoader />
+}: HydrationBoundaryProps) {
+  const [isHydrated, setIsHydrated] = useState(false);
+  const storeHydrated = useAppStore((state) => state.isHydrated);
+
+  useEffect(() => {
+    // Check if we're on the client and store is hydrated
+    const checkHydration = async () => {
+      // Small delay to ensure store has time to hydrate
+      await new Promise(resolve => setTimeout(resolve, 50));
+      setIsHydrated(true);
+    };
+    
+    checkHydration();
+  }, []);
+
+  if (!isHydrated || !storeHydrated) {
+    return <>{fallback}</>;
+  }
+
+  return <>{children}</>;
+}
+```
+
+#### 4. Usage in Page Component
+
+```typescript
+// app/page.tsx
+'use client';
+
+import HydrationBoundary from '@/components/HydrationBoundary';
+import HydrationStatus from '@/components/HydrationStatus';
+import CounterSection from '@/components/CounterSection';
+import CommentsSection from '@/components/CommentsSection';
+
+export default function Home() {
+  return (
+    <main className="min-h-screen bg-gray-100 py-8">
+      <HydrationStatus />
+      
+      <HydrationBoundary
+        fallback={
+          <div className="flex items-center justify-center py-20">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
+            <p className="mt-4">Hydrating persisted state...</p>
+          </div>
+        }
+      >
+        {/* Components that use persisted state */}
+        <CounterSection />
+        <CommentsSection />
+      </HydrationBoundary>
+    </main>
+  );
+}
+```
+
+### How Hydration Works
+
+1. **Initial Server Render** - Server renders with default store values
+2. **Client Mount** - React hydrates the DOM on the client
+3. **Store Rehydration** - Zustand checks localStorage for persisted state
+4. **Hydration Boundary** - Prevents rendering until store is fully hydrated
+5. **Synchronized Render** - Components render with correct persisted values
+
+### Key Implementation Details
+
+#### Hydration Status Component
+
+Shows real-time hydration status and persisted data:
+
+```typescript
+// components/HydrationStatus.tsx
+export default function HydrationStatus() {
+  const [mounted, setMounted] = useState(false);
+  const isHydrated = useAppStore((state) => state.isHydrated);
+  const comments = useAppStore((state) => state.comments);
+  const count = useAppStore((state) => state.count);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) {
+    return <div>Mounting...</div>;
+  }
+
+  return (
+    <div className={isHydrated ? 'bg-green-100' : 'bg-yellow-100'}>
+      <p>Store: {isHydrated ? '✅ Hydrated' : '⏳ Hydrating...'}</p>
+      <p>Persisted Count: {count}</p>
+      <p>Persisted Comments: {comments.length}</p>
+    </div>
+  );
+}
+```
+
+### Benefits of Proper Hydration
+
+- **No Hydration Errors** - Prevents mismatches between server and client
+- **Smooth UX** - Shows loading state while hydrating
+- **Type Safety** - Full TypeScript support for state and actions
+- **Debug Visibility** - Clear indication of hydration status
+- **Persisted State** - Maintains user data across sessions
+
+### Common Pitfalls to Avoid
+
+1. **Don't access localStorage directly in components** - Let Zustand handle it
+2. **Don't render persisted values before hydration** - Use HydrationBoundary
+3. **Don't forget the fallback UI** - Users should see something while hydrating
+4. **Don't mix server and client state** - Keep them clearly separated
+
+### Testing Hydration
+
+To test the hydration behavior:
+
+1. Interact with the counter or fetch comments
+2. Refresh the page
+3. Observe the hydration loader briefly appear
+4. See your persisted state restored
+5. Check DevTools console for hydration logs
+
+---
+
 ## Key Learnings
 
 1. **Selective Subscriptions** are crucial for performance optimization
@@ -354,12 +583,13 @@ const useStore = create(
 4. **Slices** provide excellent code organization and maintainability
 5. **DevTools integration** is essential for debugging complex state flows
 6. **Persistence** improves user experience with minimal configuration
+7. **Proper Hydration** prevents SSR mismatches and ensures smooth state restoration
 
 ## Conclusion
 
 Zustand proves to be an elegant and powerful state management solution that strikes the perfect balance between simplicity and functionality. Its minimal API surface, combined with powerful middleware options, makes it an excellent choice for React applications of any size.
 
-The key to mastering Zustand lies in understanding its subscription model and leveraging its middleware ecosystem effectively. By following the patterns and best practices documented here, you can build performant, maintainable, and user-friendly applications.
+The key to mastering Zustand lies in understanding its subscription model, leveraging its middleware ecosystem effectively, and properly handling hydration in SSR environments. By following the patterns and best practices documented here, you can build performant, maintainable, and user-friendly applications.
 
 ---
 
