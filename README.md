@@ -575,6 +575,167 @@ To test the hydration behavior:
 
 ---
 
+## 7. Shallow Merge in Zustand
+
+Understanding how Zustand's `set` function works with the shallow merge parameter is crucial for proper state management.
+
+### The set Function Signature
+
+```javascript
+set(partialOrUpdater, replace?, actionName?)
+```
+
+- **partialOrUpdater**: The state update (object or function)
+- **replace**: Boolean flag (default: `false`)
+  - `false` → Shallow merge with existing state
+  - `true` → Replace entire state
+- **actionName**: Optional label for Redux DevTools
+
+### What is Shallow Merge?
+
+Shallow merge means "merge only the top level" of the state object. When you use `set(partial, false)` (the default), Zustand performs:
+
+```javascript
+state = { ...state, ...partial }
+```
+
+This means:
+- Only top-level keys in `partial` overwrite the same keys in `state`
+- Nested objects/arrays are **replaced entirely**, not merged recursively
+
+### Examples with Shallow Merge (false)
+
+Consider a store with this initial state:
+```javascript
+{
+  count: 1,
+  user: {
+    name: 'Ann',
+    prefs: {
+      theme: 'dark'
+    }
+  },
+  tags: ['a', 'b']
+}
+```
+
+#### Example 1: Updating a top-level primitive
+```javascript
+set({ count: 2 }, false)
+// Result:
+{
+  count: 2,  // ✅ Updated
+  user: { name: 'Ann', prefs: { theme: 'dark' } },  // ✅ Preserved
+  tags: ['a', 'b']  // ✅ Preserved
+}
+```
+
+#### Example 2: Updating a nested object (shallow merge pitfall)
+```javascript
+set({ user: { name: 'Bob' } }, false)
+// Result:
+{
+  count: 1,
+  user: { name: 'Bob' },  // ⚠️ Entire user object replaced
+  tags: ['a', 'b']
+}
+// Notice: prefs is GONE because user was replaced as a whole
+```
+
+#### Example 3: Properly updating nested objects
+To preserve nested properties, manually spread them:
+```javascript
+set((state) => ({
+  user: {
+    ...state.user,
+    name: 'Bob'  // Only update name, preserve prefs
+  }
+}), false)
+// Result:
+{
+  count: 1,
+  user: { name: 'Bob', prefs: { theme: 'dark' } },  // ✅ prefs preserved
+  tags: ['a', 'b']
+}
+```
+
+### What Happens with Replace (true)?
+
+When you use `set(partialOrUpdater, true)`, the **entire store** is replaced with what you return. Anything not included is lost.
+
+#### Example 1: Dangerous replacement
+```javascript
+// ❌ BAD: Loses all other state
+set((state) => ({ count: state.count - 1 }), true)
+// Result:
+{ count: 0 }  // user, tags, everything else GONE!
+```
+
+#### Example 2: Safe replacement (if needed)
+```javascript
+// If you really need replace, carry over the rest:
+set((state) => ({ ...state, count: state.count - 1 }), true)
+// Result: All state preserved with count updated
+```
+
+### Practical Usage in Counter Example
+
+In our counter store:
+```javascript
+decrement: () => set(
+  (state) => ({ count: state.count - 1 }),
+  false,        // Shallow merge (default)
+  'decrement'   // Action name for DevTools
+)
+```
+
+This:
+1. Returns `{ count: newValue }`
+2. Shallow merges with existing state (preserves other properties)
+3. Labels the action as 'decrement' in Redux DevTools
+
+### Rules of Thumb
+
+1. **Use `false` (default) for normal updates** - This is what you want 99% of the time
+2. **Use `true` only for complete state resets** - When you intentionally want to replace everything
+3. **Be careful with nested objects** - They're replaced, not merged
+4. **For deep updates, do it manually** - Use spread operators to preserve nested data
+
+### Common Patterns
+
+#### Pattern 1: Update multiple top-level fields
+```javascript
+// ✅ Good - shallow merge works perfectly here
+set({ count: 5, loading: false, error: null })
+```
+
+#### Pattern 2: Update nested object field
+```javascript
+// ✅ Good - manually preserve nested structure
+set((state) => ({
+  user: {
+    ...state.user,
+    profile: {
+      ...state.user.profile,
+      avatar: 'new-url.jpg'
+    }
+  }
+}))
+```
+
+#### Pattern 3: Reset entire store
+```javascript
+// ✅ Good use of replace=true
+const initialState = { count: 0, user: null, tags: [] };
+reset: () => set(initialState, true)
+```
+
+### Key Takeaway
+
+> **Zustand's shallow merge is efficient but requires careful handling of nested objects. Always remember that nested objects are replaced, not merged, so spread them manually when you need to preserve their properties.**
+
+---
+
 ## Key Learnings
 
 1. **Selective Subscriptions** are crucial for performance optimization
